@@ -1,0 +1,27 @@
+name: Hablla Integration Worker
+
+on:
+  repository_dispatch:
+    types: [google_token_ready]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run Integration
+        env:
+          GOOGLE_TOKEN: ${{ github.event.client_payload.token }}
+          HABLLA_EMAIL: ${{ secrets.HABLLA_EMAIL }}
+          HABLLA_PASSWORD: ${{ secrets.HABLLA_PASSWORD }}
+          HABLLA_WORKSPACE_ID: ${{ secrets.HABLLA_WORKSPACE_ID }}
+          HABLLA_BOARD_ID: ${{ secrets.HABLLA_BOARD_ID }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        run: node index.js
