@@ -14,6 +14,7 @@ async function run() {
     try {
         const gHeaders = { 'Authorization': `Bearer ${GOOGLE_TOKEN}`, 'Content-Type': 'application/json' };
 
+        // 1. Busca nomes dos colaboradores
         console.log(`[${new Date().toISOString()}] Sincronizando base de colaboradores...`);
         const resDB = await axios.get(
             `https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`,
@@ -21,19 +22,26 @@ async function run() {
         );
         
         const mapaNomes = {};
-        (resDB.data.values || []).forEach(row => {
-            const nome = row[0];   // Coluna A
-            const idHablla = row[12]; // Coluna M
-            if (idHablla) mapaNomes[idHablla] = nome;
-        });
+        if (resDB.data && resDB.data.values) {
+            resDB.data.values.forEach(row => {
+                const nome = row[0];   // Coluna A
+                const idHablla = row[12]; // Coluna M
+                if (idHablla) mapaNomes[idHablla] = nome;
+            });
+            console.log(`[${new Date().toISOString()}] ${Object.keys(mapaNomes).length} colaboradores mapeados.`);
+        } else {
+            console.log(`[${new Date().toISOString()}] Aviso: Nenhum dado encontrado na planilha de colaboradores.`);
+        }
 
         // 2. Login Hablla
+        console.log(`[${new Date().toISOString()}] Autenticando na Hablla...`);
         const login = await axios.post('https://api.hablla.com/v1/authentication/login', {
             email: HABLLA_EMAIL, password: HABLLA_PASSWORD
         });
         const hHeaders = { 'Authorization': `Bearer ${login.data.accessToken}` };
 
         // 3. Processa Cards (Fluxo 1)
+        console.log(`[${new Date().toISOString()}] Buscando Cards...`);
         let page = 1, totalPages = 1;
         while (page <= totalPages) {
             const res = await axios.get(`https://api.hablla.com/v3/workspaces/${HABLLA_WORKSPACE_ID}/cards`, {
@@ -57,7 +65,7 @@ async function run() {
                     fmt(card.updated_at), fmt(card.created_at), card.workspace, card.board, card.list,
                     cf1, cf2, cf3, card.name, card.description, card.source, card.status,
                     card.user, fmt(card.finished_at), card.id, 
-                    mapaNomes[card.user] || "", // Nome resolvido aqui!
+                    mapaNomes[card.user] || "", 
                     cf4, (card.tags || []).map(t => t.name).join(", ")
                 ];
             });
@@ -70,6 +78,7 @@ async function run() {
         }
 
         // 4. Processa Atendentes (Fluxo 2)
+        console.log(`[${new Date().toISOString()}] Gerando relatório de atendentes...`);
         const ontem = new Date(); ontem.setDate(ontem.getDate() - 1);
         const dRel = ontem.toLocaleDateString('pt-BR');
         const dISO = ontem.toISOString().split('T')[0];
@@ -96,7 +105,13 @@ async function run() {
         console.log(`[${new Date().toISOString()}] Processamento concluído.`);
 
     } catch (e) {
-        console.error("Erro na integração.");
+        console.error("--- ERRO DETALHADO PARA QA ---");
+        if (e.response) {
+            console.error("Status da API:", e.response.status);
+            console.error("Detalhes:", JSON.stringify(e.response.data, null, 2));
+        } else {
+            console.error("Mensagem de erro:", e.message);
+        }
         process.exit(1);
     }
 }
