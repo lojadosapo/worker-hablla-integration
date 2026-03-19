@@ -23,57 +23,84 @@ async function run() {
         const login = await axios.post('https://api.hablla.com/v1/authentication/login', { email: HABLLA_EMAIL, password: HABLLA_PASSWORD });
         const hHeaders = { 'Authorization': `Bearer ${login.data.accessToken}` };
 
-        // --- LÓGICA DE DATAS (JANELA DE 7 DIAS) ---
-        const hojeDataISO = new Date().toISOString().split('T')[0];
-        let inicioBusca = new Date();
-        
-        if (hojeDataISO === "2026-03-19") {
-            console.log("--- CARGA INICIAL COMPLETA (2026) ---");
-            inicioBusca = new Date("2026-01-01T00:00:00Z");
-        } else {
-            console.log("--- EXECUÇÃO DIÁRIA: JANELA DE 7 DIAS ---");
-            inicioBusca.setDate(inicioBusca.getDate() - 7);
-            inicioBusca.setHours(0, 0, 0, 0);
-        }
-        const dISOInicio = inicioBusca.toISOString();
+        // --- LÓGICA DE DATAS ---
+        const hoje = new Date();
+        const seteDiasAtras = new Date();
+        seteDiasAtras.setDate(hoje.getDate() - 7);
+        seteDiasAtras.setHours(0, 0, 0, 0);
 
-        // 3. LIMPEZA PREVENTIVA (SÓ SE NÃO FOR CARGA INICIAL)
-        if (hojeDataISO !== "2026-03-19") {
-            console.log(`[${new Date().toISOString()}] Limpando registros dos últimos 7 dias no Sheets...`);
-            // Aqui usamos um Batch Update para filtrar e deletar. 
-            // Para simplificar e ser seguro via API, vamos ler a aba e filtrar.
-            const resSheet = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:R`, { headers: gHeaders });
-            if (resSheet.data?.values) {
-                const cabecalho = resSheet.data.values[0];
-                const linhasMantidas = resSheet.data.values.filter((row, index) => {
-                    if (index === 0) return true; // Mantém cabeçalho
-                    const dataCriacao = row[1]; // Coluna B
-                    if (!dataCriacao) return true;
-                    // Converte "15/03/2026 10:00:00" para objeto Date para comparar
-                    const [d, m, y] = dataCriacao.split(' ')[0].split('/');
+        const limiteCriacao = new Date();
+        limiteCriacao.setDate(hoje.getDate() - 9); // Margem de segurança de 9 dias para o 'createdAt'
+
+        const dISOInicio = seteDiasAtras.toISOString();
+
+        // 3. LIMPEZA SELETIVA (Deleta apenas o que for >= 7 dias)
+        console.log(`[${new Date().toISOString()}] Limpando registros recentes no Sheets...`);
+        const resSheet = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:B`, { headers: gHeaders });
+        if (resSheet.data?.values) {
+            // Filtramos os índices das linhas que possuem data de criação (coluna B) dentro da nossa janela
+            const indicesParaDeletar = resSheet.data.values
+                .map((row, index) => {
+                    const dataCriacaoStr = row[1]; // Coluna B
+                    if (!dataCriacaoStr || index === 0) return -1;
+                    const [d, m, y] = dataCriacaoStr.split(' ')[0].split('/');
                     const dataRow = new Date(`${y}-${m}-${d}T00:00:00Z`);
-                    return dataRow < inicioBusca; // Mantém apenas o que for mais antigo que a janela de 7 dias
-                });
+                    return dataRow >= seteDiasAtras ? index : -1;
+                })
+                .filter(i => i !== -1);
 
-                // Sobrescreve a planilha com os dados filtrados (limpando a área dos 7 dias)
-                await axios.put(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A1?valueInputOption=USER_ENTERED`, 
-                { values: linhasMantidas }, { headers: gHeaders });
-                console.log(`[${new Date().toISOString()}] Limpeza concluída.`);
+            if (indicesParaDeletar.length > 0) {
+                // Deletamos de trás para frente para não corromper os índices durante a execução
+                const requests = indicesParaDeletar.reverse().map(i => ({
+                    deleteDimension: { range: { sheetId: 0, dimension: "ROWS", startIndex: i, endIndex: i + 1 } }
+                }));
+                await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`, { requests }, { headers: gHeaders });
+                console.log(`[${new Date().toISOString()}] Limpeza de ${indicesParaDeletar.length} linhas concluída.`);
             }
         }
 
-        // 4. BUSCA CARDS (HABLLA)
-        let page = 1, totalPages = 1;
-        while (page <= totalPages) {
+        // 4. BUSCA CARDS (Com trava de 2 páginas sem criação nova)
+        let page = 1;
+        let totalPages = 1;
+        let paginasSemCriacaoNova = 0;
+        let continuarBuscando = true;
+
+        while (page <= totalPages && continuarBuscando) {
             const res = await axios.get(`https://api.hablla.com/v3/workspaces/${HABLLA_WORKSPACE_ID}/cards`, {
-                params: { board: HABLLA_BOARD_ID, limit: 50, order: 'updated_at', page: page, updated_after: dISOInicio },
+                params: { 
+                    board: HABLLA_BOARD_ID, 
+                    limit: 50, 
+                    order: 'updated_at', // Mantém o foco no que foi alterado recentemente
+                    page: page, 
+                    updated_after: dISOInicio 
+                },
                 headers: hHeaders
             });
 
+            const cards = res.data.results || [];
             totalPages = res.data.totalPages || 1;
-            console.log(`[${new Date().toISOString()}] Processando página ${page} de ${totalPages}...`);
 
-            const rowsCards = (res.data.results || []).map(card => {
+            if (cards.length === 0) break;
+
+            // LÓGICA DE TRAVA: Verifica se alguém na página foi CRIADO nos últimos 9 dias
+            const temCriacaoNovaNestaPagina = cards.some(c => new Date(c.created_at) >= limiteCriacao);
+
+            if (!temCriacaoNovaNestaPagina) {
+                paginasSemCriacaoNova++;
+                console.log(`[AVISO] Página ${page} sem cards criados nos últimos 9 dias. (${paginasSemCriacaoNova}/2)`);
+            } else {
+                paginasSemCriacaoNova = 0; // Reseta se achar um card realmente novo
+            }
+
+            if (paginasSemCriacaoNova >= 2) {
+                console.log(`[STOP] Interrompendo: 2 páginas consecutivas sem novos protocolos criados.`);
+                continuarBuscando = false;
+                break;
+            }
+
+            console.log(`[${new Date().toISOString()}] Processando página ${page}...`);
+
+            const rowsCards = cards.map(card => {
                 const fmt = (d) => d ? new Date(new Date(d).getTime() - (3 * 3600000)).toLocaleString('pt-BR', {timeZone: 'UTC'}).replace(',', '') : "";
                 let cf = ["", "", "", ""];
                 const ids = ["67b39131ee792966f3fba492", "67b608470787782ce7acafba", "67dc6a0a17925c23d8365708", "679120ec177ff6d2c7597156"];
@@ -91,7 +118,7 @@ async function run() {
             if (rowsCards.length > 0) {
                 await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:A:append?valueInputOption=USER_ENTERED`, 
                 { values: rowsCards }, { headers: gHeaders });
-                await sleep(1200); // Evita 429
+                await sleep(1200);
             }
             page++;
         }
