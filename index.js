@@ -2,7 +2,21 @@ const axios = require('axios');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- FUNÇÕES DE APOIO ---
+// Função robusta para converter datas da planilha (ex: 19/3/2026 ou 19/03/2026)
+function parseDataBR(texto) {
+    if (!texto) return null;
+    try {
+        const limpo = texto.replace(',', '').trim().split(' ')[0];
+        const [d, m, y] = limpo.split('/');
+        if (!d || !m || !y) return null;
+        // Normaliza para o formato ISO YYYY-MM-DD
+        const dataISO = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}T00:00:00Z`;
+        const dObj = new Date(dataISO);
+        return isNaN(dObj.getTime()) ? null : dObj;
+    } catch (e) {
+        return null;
+    }
+}
 
 function formatarDataBR(dataISO) {
     if (!dataISO) return "";
@@ -20,16 +34,15 @@ async function run() {
     const gHeaders = { 'Authorization': `Bearer ${GOOGLE_TOKEN}`, 'Content-Type': 'application/json' };
 
     try {
-        // --- ETAPA 1: METADADOS (RESOLVE O ERRO DE GID) ---
-        console.log(">>> [ETAPA 1] Obtendo IDs das abas na planilha...");
+        // --- ETAPA 1: METADADOS ---
+        console.log(">>> [ETAPA 1] Obtendo IDs das abas...");
         const meta = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`, { headers: gHeaders });
-        
         const sheetHablla = meta.data.sheets.find(s => s.properties.title === "Base Hablla Card");
         if (!sheetHablla) throw new Error("Aba 'Base Hablla Card' não encontrada!");
         const idBaseHablla = sheetHablla.properties.sheetId;
 
-        // --- ETAPA 2: SINCRONIZAÇÃO DE COLABORADORES ---
-        console.log(">>> [ETAPA 2] Mapeando nomes de colaboradores...");
+        // --- ETAPA 2: COLABORADORES ---
+        console.log(">>> [ETAPA 2] Mapeando colaboradores...");
         const resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { headers: gHeaders });
         const mapaNomes = {};
         if (resColab.data?.values) {
@@ -37,62 +50,69 @@ async function run() {
         }
 
         // --- ETAPA 3: LOGIN HABLLA ---
-        console.log(">>> [ETAPA 3] Autenticando na API Hablla...");
         const login = await axios.post('https://api.hablla.com/v1/authentication/login', { email: HABLLA_EMAIL, password: HABLLA_PASSWORD });
         const hHeaders = { 'Authorization': `Bearer ${login.data.accessToken}` };
 
-        // --- DEFINIÇÃO DE JANELA DE TEMPO (7 DIAS) ---
+        // JANELA DE 7 DIAS
         const hoje = new Date();
         const seteDiasAtras = new Date();
         seteDiasAtras.setDate(hoje.getDate() - 7);
         seteDiasAtras.setHours(0, 0, 0, 0);
 
-        // --- ETAPA 4: LEITURA E IDENTIFICAÇÃO DE LIMPEZA ---
-        console.log(`>>> [ETAPA 4] Analisando registros de ${seteDiasAtras.toLocaleDateString('pt-BR')} até hoje para apagar...`);
+        // --- ETAPA 4: LEITURA E LIMPEZA COM CRITÉRIO DE PARADA (20 LINHAS) ---
+        console.log(`>>> [ETAPA 4] Analisando registros para limpeza de baixo para cima...`);
         const resSheet = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:B`, { headers: gHeaders });
         
         if (resSheet.data?.values) {
             const rows = resSheet.data.values;
             let blocosParaDeletar = [];
             let startIdx = -1;
+            let contadorConsecutivasFora = 0;
 
-            // Percorre de baixo para cima para identificar sequências de datas recentes
+            // Loop de baixo para cima (pula o cabeçalho no índice 0)
             for (let i = rows.length - 1; i >= 1; i--) {
-                const dataStr = rows[i][1]; // Coluna B
-                if (!dataStr) continue;
+                const dataRow = parseDataBR(rows[i][1]); // Analisa Coluna B
 
-                const [data] = dataStr.split(' ');
-                const [d, m, y] = data.split('/');
-                const dataRow = new Date(`${y}-${m}-${d}T00:00:00Z`);
-
-                if (dataRow >= seteDiasAtras) {
-                    if (startIdx === -1) startIdx = i; 
+                if (dataRow && dataRow >= seteDiasAtras) {
+                    // Linha está dentro do prazo: marcar para deletar e resetar contador
+                    if (startIdx === -1) startIdx = i;
+                    contadorConsecutivasFora = 0;
                 } else {
+                    // Linha fora do prazo ou vazia
+                    contadorConsecutivasFora++;
+                    
+                    // Se tínhamos um bloco ativo, encerra ele aqui
                     if (startIdx !== -1) {
                         blocosParaDeletar.push({ start: i + 1, end: startIdx + 1 });
                         startIdx = -1;
                     }
+
+                    // CRITÉRIO DE PARADA: 20 linhas seguidas fora do prazo
+                    if (contadorConsecutivasFora >= 20) {
+                        console.log(`[INFO] Parada atingida na linha ${i + 1} após 20 linhas consecutivas fora do prazo.`);
+                        break;
+                    }
                 }
             }
+            // Caso o loop termine ainda em um bloco (ex: chegou no cabeçalho)
             if (startIdx !== -1) blocosParaDeletar.push({ start: 1, end: startIdx + 1 });
 
-            // --- ETAPA 5: EXCUÇÃO DA LIMPEZA (DELETE DIMENSION) ---
+            // --- ETAPA 5: EXECUÇÃO DA LIMPEZA ---
             if (blocosParaDeletar.length > 0) {
-                console.log(`>>> [ETAPA 5] Executando limpeza de ${blocosParaDeletar.length} bloco(s)...`);
+                console.log(`>>> [ETAPA 5] Removendo ${blocosParaDeletar.length} bloco(s) de linhas...`);
+                // Ordenar para garantir que o Sheets processe corretamente (opcional em batchUpdate mas boa prática)
                 const requests = blocosParaDeletar.map(b => ({
-                    deleteDimension: { 
-                        range: { sheetId: idBaseHablla, dimension: "ROWS", startIndex: b.start, endIndex: b.end } 
-                    }
+                    deleteDimension: { range: { sheetId: idBaseHablla, dimension: "ROWS", startIndex: b.start, endIndex: b.end } }
                 }));
                 await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`, { requests }, { headers: gHeaders });
                 console.log("Limpeza concluída.");
             } else {
-                console.log(">>> [ETAPA 5] Nenhuma linha encontrada para apagar.");
+                console.log(">>> [ETAPA 5] Nenhuma linha recente encontrada para apagar.");
             }
         }
 
-        // --- ETAPA 6: BUSCA E INSERÇÃO DE NOVOS DADOS ---
-        console.log(">>> [ETAPA 6] Buscando dados atualizados na API...");
+        // --- ETAPA 6: BUSCA E INSERÇÃO (API HABLLA) ---
+        console.log(">>> [ETAPA 6] Sincronizando novos dados da API...");
         let page = 1, totalPages = 1, paginasSemNovos = 0;
 
         while (page <= totalPages) {
@@ -130,7 +150,6 @@ async function run() {
             } else {
                 paginasSemNovos++;
             }
-
             if (paginasSemNovos >= 2) break;
             page++;
         }
@@ -138,18 +157,14 @@ async function run() {
         // --- ETAPA 7: RELATÓRIO DE ATENDENTES (ONTEM) ---
         console.log(">>> [ETAPA 7] Processando Base Atendente...");
         const ontem = new Date(); ontem.setDate(ontem.getDate() - 1);
-        const dIni = new Date(ontem.setHours(0,0,0,0)).toISOString();
-        const dFim = new Date(ontem.setHours(23,59,59,999)).toISOString();
-
         const resAt = await axios.get(`https://api.hablla.com/v1/workspaces/${HABLLA_WORKSPACE_ID}/reports/services/summary`, {
-            params: { start_date: dIni, end_date: dFim }, headers: hHeaders
+            params: { start_date: new Date(ontem.setHours(0,0,0,0)).toISOString(), end_date: new Date(ontem.setHours(23,59,59,999)).toISOString() },
+            headers: hHeaders
         });
-
         const rowsAt = (resAt.data.results || []).map(item => {
             const u = item.user || {}, s = item.sector || {}, c = item.connection || {};
             return [ ontem.toLocaleDateString('pt-BR'), HABLLA_WORKSPACE_ID, s.id, s.name, u.id, mapaNomes[u.id] || "", u.email, item.total_services, item.tme, item.tma, c.id, c.name, c.type, item.total_csat, item.total_csat_greater_4, item.csat, item.total_fcr ];
         });
-
         if (rowsAt.length > 0) {
             await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Atendente!A:A:append?valueInputOption=USER_ENTERED`, { values: rowsAt }, { headers: gHeaders });
         }
