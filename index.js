@@ -173,7 +173,7 @@ async function run() {
 
     } catch (e) {
         console.error("!!! ERRO NO PROCESSO !!!");
-        console.error(e.response ? JSON.stringify(e.response.data, null, 2) : e.message);
+        console.error("Erro na API: ", e.response.status)
         process.exit(1);
     }
 }
