@@ -56,50 +56,62 @@ async function run() {
 
         console.log(`[INFO] Atualizando registros de ${seteDiasAtras.toLocaleDateString('pt-BR')} até hoje.`);
 
-        // 4. LIMPEZA DOS ÚLTIMOS 7 DIAS NO SHEETS
-        console.log(`[${new Date().toISOString()}] Lendo planilha para identificar linhas dos últimos 7 dias...`);
+        // 4. LIMPEZA DOS ÚLTIMOS 7 DIAS NO SHEETS (Versão Otimizada)
+        console.log(`[${new Date().toISOString()}] Analisando linhas para limpeza...`);
         const resSheet = await axios.get(
             `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:B`, 
             { headers: gHeaders }
         );
 
         if (resSheet.data?.values) {
-            const indicesParaDeletar = resSheet.data.values
-                .map((row, index) => {
-                    const dataCriacaoStr = row[1]; // Coluna B (created_at)
-                    if (!dataCriacaoStr || index === 0) return -1; // Pula cabeçalho ou vazio
+            const rows = resSheet.data.values;
+            let intervalosParaDeletar = [];
+            let start = -1;
 
-                    // Formato esperado: "19/03/2026 09:00:44"
-                    const [data] = dataCriacaoStr.split(' ');
-                    const [d, m, y] = data.split('/');
-                    const dataRow = new Date(`${y}-${m}-${d}T00:00:00Z`);
+            // Identifica blocos de linhas consecutivas para deletar
+            for (let i = rows.length - 1; i >= 1; i--) {
+                const dataCriacaoStr = rows[i][1];
+                if (!dataCriacaoStr) continue;
 
-                    // Se a data for de 7 dias atrás para cá, marca para deletar
-                    return dataRow >= seteDiasAtras ? index : -1;
-                })
-                .filter(i => i !== -1);
+                const [data] = dataCriacaoStr.split(' ');
+                const [d, m, y] = data.split('/');
+                const dataRow = new Date(`${y}-${m}-${d}T00:00:00Z`);
 
-            if (indicesParaDeletar.length > 0) {
-                console.log(`[${new Date().toISOString()}] Apagando ${indicesParaDeletar.length} linhas para sobrescrever...`);
-                // Deleta de baixo para cima para não quebrar a ordem dos índices
-                const requests = indicesParaDeletar.reverse().map(i => ({
+                if (dataRow >= seteDiasAtras) {
+                    if (start === -1) start = i;
+                } else {
+                    if (start !== -1) {
+                        // Registra o bloco (startIndex inclusive, endIndex exclusivo)
+                        intervalosParaDeletar.push({ start: i + 1, end: start + 1 });
+                        start = -1;
+                    }
+                }
+            }
+            // Caso o bloco chegue até a linha 1
+            if (start !== -1) intervalosParaDeletar.push({ start: 1, end: start + 1 });
+
+            if (intervalosParaDeletar.length > 0) {
+                console.log(`[${new Date().toISOString()}] Apagando ${intervalosParaDeletar.length} bloco(s) de linhas...`);
+                
+                const requests = intervalosParaDeletar.map(range => ({
                     deleteDimension: { 
                         range: { 
                             sheetId: idBaseHablla, 
                             dimension: "ROWS", 
-                            startIndex: i, 
-                            endIndex: i + 1 
+                            startIndex: range.start, 
+                            endIndex: range.end 
                         } 
                     }
                 }));
+
                 await axios.post(
                     `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`, 
                     { requests }, 
                     { headers: gHeaders }
                 );
+                console.log("Limpeza concluída.");
             }
         }
-
         // 5. BUSCA CARDS NA API E INSERE O QUE FOI APAGADO
         let page = 1;
         let totalPages = 1;
