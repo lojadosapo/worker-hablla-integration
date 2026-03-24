@@ -19,12 +19,6 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Mascarar Credenciais e Tokens
-        run: |
-          echo "::add-mask::${{ github.event.client_payload.token }}"
-          echo "::add-mask::${{ secrets.HABLLA_EMAIL }}"
-          echo "::add-mask::${{ secrets.HABLLA_PASSWORD }}"
-
       - name: Install dependencies
         run: npm install
 
