@@ -2,9 +2,21 @@ const axios = require('axios');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-/**
- * SEGURANÇA: Sanitiza strings para evitar Spreadsheet Formula Injection.
- */
+// Função para mascarar dados sensíveis
+function maskSensitiveData(data, maxLength = 8) {
+    if (!data || typeof data !== 'string') return '[MASKED]';
+    if (data.length <= maxLength) return '[MASKED]';
+    return data.substring(0, 4) + '*'.repeat(data.length - 8) + data.substring(data.length - 4);
+}
+
+// Função para registrar eventos sem expor dados sensíveis
+function secureLog(message, isError = false) {
+    const timestamp = new Date().toISOString();
+    const logLevel = isError ? 'ERROR' : 'INFO';
+    console.log(`[${timestamp}] [${logLevel}] ${message}`);
+}
+
+// Função para impedir Spreadsheet Formula Injection
 function sanitize(val) {
     if (typeof val !== 'string') return val;
     const formulaChars = ['=', '+', '-', '@'];
@@ -45,14 +57,14 @@ async function run() {
 
     try {
         // --- ETAPA 1: METADADOS ---
-        console.log(">>> [ETAPA 1] Obtendo IDs das abas...");
+        secureLog("Obtendo IDs das abas...");
         const meta = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`, { headers: gHeaders });
         const sheetHablla = meta.data.sheets.find(s => s.properties.title === "Base Hablla Card");
         if (!sheetHablla) throw new Error("Aba 'Base Hablla Card' não encontrada!");
         const idBaseHablla = sheetHablla.properties.sheetId;
 
         // --- ETAPA 2: COLABORADORES ---
-        console.log(">>> [ETAPA 2] Mapeando colaboradores...");
+        secureLog("Mapeando colaboradores...");
         const resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { headers: gHeaders });
         const mapaNomes = {};
         if (resColab.data?.values) {
@@ -70,7 +82,7 @@ async function run() {
         seteDiasAtras.setHours(0, 0, 0, 0);
 
         // --- ETAPA 4: LIMPEZA COM CRITÉRIO DE PARADA ---
-        console.log(`>>> [ETAPA 4] Analisando registros para limpeza (7 dias)...`);
+        secureLog("Analisando registros para limpeza (7 dias)...");
         const resSheet = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:B`, { headers: gHeaders });
         
         if (resSheet.data?.values) {
@@ -102,7 +114,7 @@ async function run() {
         }
 
         // --- ETAPA 5: BUSCA E INSERÇÃO ---
-        console.log(">>> [ETAPA 5] Sincronizando novos dados da API...");
+        secureLog("Sincronizando novos dados da API...");
         let page = 1, paginasSemNovos = 0;
 
         while (page <= 500) {
@@ -144,7 +156,7 @@ async function run() {
         }
 
         // --- ETAPA 6: FAXINA DE DUPLICADOS (COLUNA O / ÍNDICE 14) ---
-        console.log(">>> [ETAPA 6] Removendo duplicados da Coluna O...");
+        secureLog("Removendo duplicados da Coluna O...");
         const resF = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:R`, { headers: gHeaders });
         if (resF.data?.values) {
             const rows = resF.data.values;
@@ -159,11 +171,11 @@ async function run() {
             await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:R:clear`, {}, { headers: gHeaders });
             await axios.put(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A1`, 
                 { values: dadosFinais }, { params: { valueInputOption: 'USER_ENTERED' }, headers: gHeaders });
-            console.log("Faxina concluída.");
+            secureLog("Faxina concluída.");
         }
 
         // --- ETAPA 7: RELATÓRIO DE ATENDENTES ---
-        console.log(">>> [ETAPA 7] Processando Base Atendente...");
+        secureLog("Processando Base Atendente...");
         const ontem = new Date(); ontem.setDate(ontem.getDate() - 1);
         const resAt = await axios.get(`https://api.hablla.com/v1/workspaces/${HABLLA_WORKSPACE_ID}/reports/services/summary`, {
             params: { 
@@ -184,13 +196,13 @@ async function run() {
             await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Atendente!A:A:append?valueInputOption=USER_ENTERED`, { values: rowsAt }, { headers: gHeaders });
         }
 
-        console.log(">>> [SUCESSO] Sincronização e faxina concluídas.");
+        secureLog("Sincronização e faxina concluídas.");
 
     } catch (e) {
         // Tratamento seguro de erro para logs de CI/CD
         const status = e.response ? e.response.status : 'Erro de Rede';
         const data = e.response ? JSON.stringify(e.response.data) : e.message;
-        console.error(`!!! ERRO NO PROCESSO !!! [${status}]`, data);
+        secureLog(`Erro no processo: ${status}`, true);
         process.exit(1);
     }
 }
