@@ -24,7 +24,7 @@ jobs:
 
       - name: Run Integration
         env:
-          GOOGLE_TOKEN: ${{ github.event.client_payload.token }}
+          GOOGLE_TOKEN:  ${{ secrets.GOOGLE_TOKEN }}
           HABLLA_EMAIL: ${{ secrets.HABLLA_EMAIL }}
           HABLLA_PASSWORD: ${{ secrets.HABLLA_PASSWORD }}
           HABLLA_WORKSPACE_ID: ${{ secrets.HABLLA_WORKSPACE_ID }}
