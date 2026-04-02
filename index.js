@@ -68,7 +68,6 @@ async function run() {
         const resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { headers: gHeaders });
         const mapaNomes = {};
         if (resColab.data?.values) {
-            // No seu código original você usava r[12] (coluna M), mantive a lógica.
             resColab.data.values.forEach(r => { if (r[12]) mapaNomes[r[12]] = r[0]; });
         }
 
