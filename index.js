@@ -57,80 +57,29 @@ async function run() {
 
     try {
         // --- ETAPA 1: METADADOS ---
-        secureLog("Iniciando Etapa 1: Validando Planilha Principal...");
-        let meta;
-        try {
-            meta = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`, { headers: gHeaders });
-            secureLog("Sucesso na Etapa 1.");
-        } catch (err1) {
-            const code = err1.response?.status || "Rede";
-            const msg = err1.response?.data?.error?.message || err1.message;
-            secureLog(`ERRO CRÍTICO ETAPA 1 [${code}]: ${msg}`, true);
-            throw new Error(`Interrupção na Etapa 1: ${code}`);
-        }
-
+        secureLog("Obtendo IDs das abas...");
+        const meta = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`, { headers: gHeaders });
         const sheetHablla = meta.data.sheets.find(s => s.properties.title === "Base Hablla Card");
         if (!sheetHablla) throw new Error("Aba 'Base Hablla Card' não encontrada!");
         const idBaseHablla = sheetHablla.properties.sheetId;
 
         // --- ETAPA 2: COLABORADORES ---
-        secureLog("Iniciando Etapa 2: Acessando DB Colaboradores...");
-        let resColab;
-        try {
-            // Tentando acessar a planilha de colaboradores
-            resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { 
-                headers: { 'Authorization': `Bearer ${GOOGLE_TOKEN}` } 
-            });
-            secureLog("Sucesso na Etapa 2.");
-        } catch (err2) {
-            const code = err2.response?.status || "Rede";
-            const msg = err2.response?.data?.error?.message || err2.message;
-            
-            // Aqui está o log que vai matar a charada:
-            secureLog(`ERRO DETALHADO ETAPA 2 [${code}]: ${msg}`, true);
-            
-            if (code === 401) {
-                secureLog("Pista: 401 aqui significa que o Token é aceito pelo Google, mas não tem permissão neste arquivo específico.");
-            } else if (code === 404) {
-                secureLog("Pista: 404 significa que o ID da planilha de colaboradores ou o nome da aba está incorreto.");
-            }
-            throw new Error(`Interrupção na Etapa 2: ${code}`);
-        }
-
+        secureLog("Mapeando colaboradores...");
+        const resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { headers: gHeaders });
         const mapaNomes = {};
         if (resColab.data?.values) {
             resColab.data.values.forEach(r => { if (r[12]) mapaNomes[r[12]] = r[0]; });
         }
 
         // --- ETAPA 3: LOGIN HABLLA ---
-        secureLog(`Tentando login para: ${HABLLA_EMAIL.substring(0, 4)}... no Workspace: ${HABLLA_WORKSPACE_ID.substring(0, 5)}...`);
-        
-        let login;
-        try {
-            login = await axios.post('https://api.hablla.com/v1/authentication/login', 
-                { 
-                    email: HABLLA_EMAIL.trim(), 
-                    password: HABLLA_PASSWORD.trim() 
-                },
-                { 
-                    timeout: 15000, // Espera até 15 segundos
-                    headers: { 'User-Agent': 'Mozilla/5.0 (GitHubActions/1.0)' } // Identifica a chamada
-                }
-            );
-            secureLog("Sucesso no Login Hablla.");
-        } catch (err3) {
-            // Se não tem response, é erro de rede puro (DNS, Timeout, Bloqueio de IP)
-            if (!err3.response) {
-                secureLog(`[ERRO DE REDE BRUTO]: ${err3.code} | ${err3.message}`, true);
-                secureLog("Pista: A API do Hablla não respondeu. Pode ser um bloqueio temporário do IP do GitHub ou instabilidade no servidor deles.");
-            } else {
-                const code = err3.response.status;
-                const apiData = err3.response.data;
-                secureLog(`[FALHA HABLLA] Status: ${code} | ErrorCode: ${apiData?.errorCode}`, true);
-                secureLog(`[MENSAGEM API]: ${JSON.stringify(apiData)}`, true);
-            }
-            throw new Error("Falha no Login.");
-        }
+        const login = await axios.post('https://api.hablla.com/v1/authentication/login', { email: HABLLA_EMAIL, password: HABLLA_PASSWORD });
+        const hHeaders = { 'Authorization': `Bearer ${login.data.accessToken}` };
+
+        const hoje = new Date();
+        const seteDiasAtras = new Date();
+        seteDiasAtras.setDate(hoje.getDate() - 7);
+        seteDiasAtras.setHours(0, 0, 0, 0);
+
         // --- ETAPA 4: LIMPEZA COM CRITÉRIO DE PARADA ---
         secureLog("Analisando registros para limpeza (7 dias)...");
         const resSheet = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:B`, { headers: gHeaders });
