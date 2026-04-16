@@ -57,50 +57,20 @@ async function run() {
 
     try {
         // --- ETAPA 1: METADADOS ---
-        secureLog("Iniciando Etapa 1: Validando Planilha Principal...");
-        let meta;
-        try {
-            meta = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`, { headers: gHeaders });
-            secureLog("Sucesso na Etapa 1.");
-        } catch (err1) {
-            const code = err1.response?.status || "Rede";
-            const msg = err1.response?.data?.error?.message || err1.message;
-            secureLog(`ERRO CRÍTICO ETAPA 1 [${code}]: ${msg}`, true);
-            throw new Error(`Interrupção na Etapa 1: ${code}`);
-        }
-
+        secureLog("Obtendo IDs das abas...");
+        const meta = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`, { headers: gHeaders });
         const sheetHablla = meta.data.sheets.find(s => s.properties.title === "Base Hablla Card");
         if (!sheetHablla) throw new Error("Aba 'Base Hablla Card' não encontrada!");
         const idBaseHablla = sheetHablla.properties.sheetId;
 
         // --- ETAPA 2: COLABORADORES ---
-        secureLog("Iniciando Etapa 2: Acessando DB Colaboradores...");
-        let resColab;
-        try {
-            // Tentando acessar a planilha de colaboradores
-            resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { 
-                headers: { 'Authorization': `Bearer ${GOOGLE_TOKEN}` } 
-            });
-            secureLog("Sucesso na Etapa 2.");
-        } catch (err2) {
-            const code = err2.response?.status || "Rede";
-            const msg = err2.response?.data?.error?.message || err2.message;
-            
-            // Aqui está o log que vai matar a charada:
-            secureLog(`ERRO DETALHADO ETAPA 2 [${code}]: ${msg}`, true);
-            
-            if (code === 401) {
-                secureLog("Pista: 401 aqui significa que o Token é aceito pelo Google, mas não tem permissão neste arquivo específico.");
-            } else if (code === 404) {
-                secureLog("Pista: 404 significa que o ID da planilha de colaboradores ou o nome da aba está incorreto.");
-            }
-            throw new Error(`Interrupção na Etapa 2: ${code}`);
-        }
-
+        secureLog("Mapeando colaboradores...");
+        const resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { headers: gHeaders });
         const mapaNomes = {};
         if (resColab.data?.values) {
             resColab.data.values.forEach(r => { if (r[12]) mapaNomes[r[12]] = r[0]; });
         }
+
         // --- ETAPA 3: LOGIN HABLLA ---
         const login = await axios.post('https://api.hablla.com/v1/authentication/login', { email: HABLLA_EMAIL, password: HABLLA_PASSWORD });
         const hHeaders = { 'Authorization': `Bearer ${login.data.accessToken}` };
@@ -147,54 +117,41 @@ async function run() {
         let page = 1, paginasSemNovos = 0;
 
         while (page <= 500) {
-            try {
-                const resApi = await axios.get(`https://api.hablla.com/v3/workspaces/${HABLLA_WORKSPACE_ID}/cards`, {
-                    params: { board: HABLLA_BOARD_ID, limit: 50, page: page, updated_after: seteDiasAtras.toISOString() },
-                    headers: hHeaders
+            const resApi = await axios.get(`https://api.hablla.com/v3/workspaces/${HABLLA_WORKSPACE_ID}/cards`, {
+                params: { board: HABLLA_BOARD_ID, limit: 50, page: page, updated_after: seteDiasAtras.toISOString() },
+                headers: hHeaders
+            });
+
+            const cards = resApi.data.results || [];
+            if (cards.length === 0) break;
+
+            const rowsToInsert = cards
+                .filter(c => new Date(c.created_at) >= seteDiasAtras)
+                .map(card => {
+                    let cf = ["", "", "", ""];
+                    const ids = ["67b39131ee792966f3fba492", "67b608470787782ce7acafba", "67dc6a0a17925c23d8365708", "679120ec177ff6d2c7597156"];
+                    (card.custom_fields || []).forEach(f => {
+                        const idx = ids.indexOf(f.custom_field);
+                        if (idx !== -1) cf[idx] = f.value;
+                    });
+                    const uid = card.user || "";
+                    return [
+                        formatarDataBR(card.updated_at), formatarDataBR(card.created_at), card.workspace, card.board, card.list,
+                        sanitize(cf[0]), sanitize(cf[1]), sanitize(cf[2]), sanitize(card.name), sanitize(card.description), card.source, card.status,
+                        uid, formatarDataBR(card.finished_at), card.id, mapaNomes[uid] || "", sanitize(cf[3]), (card.tags || []).map(t => t.name).join(", ")
+                    ];
                 });
 
-                // --- IMPORTANTE: Rate Limit (Igual ao código que funciona) ---
-                await sleep(500); 
-
-                const cards = resApi.data.results || [];
-                if (cards.length === 0) break;
-
-                const rowsToInsert = cards
-                    .filter(c => new Date(c.created_at) >= seteDiasAtras)
-                    .map(card => {
-                        let cf = ["", "", "", ""];
-                        const ids = ["67b39131ee792966f3fba492", "67b608470787782ce7acafba", "67dc6a0a17925c23d8365708", "679120ec177ff6d2c7597156"];
-                        (card.custom_fields || []).forEach(f => {
-                            const idx = ids.indexOf(f.custom_field);
-                            if (idx !== -1) cf[idx] = f.value;
-                        });
-                        const uid = card.user || "";
-                        return [
-                            formatarDataBR(card.updated_at), formatarDataBR(card.created_at), card.workspace, card.board, card.list,
-                            sanitize(cf[0]), sanitize(cf[1]), sanitize(cf[2]), sanitize(card.name), sanitize(card.description), card.source, card.status,
-                            uid, formatarDataBR(card.finished_at), card.id, mapaNomes[uid] || "", sanitize(cf[3]), (card.tags || []).map(t => t.name).join(", ")
-                        ];
-                    });
-
-                if (rowsToInsert.length > 0) {
-                    await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:A:append?valueInputOption=USER_ENTERED`, 
-                        { values: rowsToInsert }, { headers: gHeaders });
-                    
-                    // Espera um pouco mais após escrever no Sheets para evitar 429 do Google
-                    await sleep(1200);
-                    paginasSemNovos = 0;
-                } else {
-                    paginasSemNovos++;
-                }
-                
-                if (paginasSemNovos >= 2) break;
-                page++;
-
-            } catch (errStep5) {
-                const status = errStep5.response ? errStep5.response.status : 'Rede/Socket';
-                secureLog(`Falha na página ${page} da Etapa 5: ${status}`, true);
-                throw errStep5; // Repassa para o catch principal
+            if (rowsToInsert.length > 0) {
+                await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:A:append?valueInputOption=USER_ENTERED`, 
+                    { values: rowsToInsert }, { headers: gHeaders });
+                await sleep(1500);
+                paginasSemNovos = 0;
+            } else {
+                paginasSemNovos++;
             }
+            if (paginasSemNovos >= 2) break;
+            page++;
         }
 
         // --- ETAPA 6: FAXINA DE DUPLICADOS (COLUNA O / ÍNDICE 14) ---
