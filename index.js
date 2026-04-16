@@ -103,21 +103,35 @@ async function run() {
         }
 
         // --- ETAPA 3: LOGIN HABLLA ---
-        secureLog("Iniciando Etapa 3: Login na API Hablla...");
+        secureLog(`Tentando login para: ${HABLLA_EMAIL.substring(0, 4)}... no Workspace: ${HABLLA_WORKSPACE_ID.substring(0, 5)}...`);
+        
         let login;
         try {
+            // O .trim() remove espaços que o GitHub às vezes coloca ao colar segredos
             login = await axios.post('https://api.hablla.com/v1/authentication/login', { 
-                email: HABLLA_EMAIL, 
-                password: HABLLA_PASSWORD 
+                email: HABLLA_EMAIL.trim(), 
+                password: HABLLA_PASSWORD.trim() 
             });
             secureLog("Sucesso no Login Hablla.");
         } catch (err3) {
             const code = err3.response?.status || "Rede";
-            const msg = JSON.stringify(err3.response?.data) || err3.message;
-            secureLog(`ERRO CRÍTICO NO LOGIN HABLLA [${code}]: ${msg}`, true);
-            throw new Error(`Falha de Autenticação Hablla: ${code}`);
+            const apiData = err3.response?.data;
+            
+            secureLog(`[FALHA HABLLA] Status: ${code} | ErrorCode: ${apiRes?.errorCode}`, true);
+            secureLog(`[MENSAGEM API]: ${JSON.stringify(apiData)}`, true);
+
+            if (apiData?.errorCode === 469) {
+                secureLog("DICA: Como o dono é o mesmo, verifique se este e-mail tem permissão de 'API' ou 'Admin' explicitamente dentro DESTA empresa no painel da Hablla.");
+            }
+            throw new Error("Falha no Login.");
         }
-        const hHeaders = { 'Authorization': `Bearer ${login.data.accessToken}` };
+
+        // Headers com o token e o Workspace ID explícito (algumas APIs exigem o contexto no header)
+        const hHeaders = { 
+            'Authorization': `Bearer ${login.data.accessToken}`,
+            'X-Workspace-Id': HABLLA_WORKSPACE_ID.trim(), // Forçando o contexto da empresa
+            'Content-Type': 'application/json'
+        };
 
         // --- ETAPA 4: LIMPEZA COM CRITÉRIO DE PARADA ---
         secureLog("Analisando registros para limpeza (7 dias)...");
