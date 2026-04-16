@@ -65,31 +65,51 @@ async function run() {
 
         // --- ETAPA 2: COLABORADORES ---
         secureLog("Mapeando colaboradores...");
-        let resColab;
-        try {
-            // Isolando a requisição para evitar reaproveitamento de estado do Axios
-            resColab = await axios({
-                method: 'get',
-                url: `https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`,
-                headers: { 
-                    'Authorization': `Bearer ${GOOGLE_TOKEN}`,
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                },
-                timeout: 15000
-            });
-        } catch (errColab) {
-            const status = errColab.response ? errColab.response.status : 'Rede';
-            const detail = errColab.response?.data?.error?.message || "Sem detalhes";
-            secureLog(`Falha específica na Etapa 2 [${status}]: ${detail}`, true);
-            throw errColab; // Repassa para o catch principal
-        }
-
+        const resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { headers: gHeaders });
         const mapaNomes = {};
         if (resColab.data?.values) {
-            resColab.data.values.forEach(r => { 
-                if (r[12]) mapaNomes[r[12]] = r[0]; 
-            });
+            resColab.data.values.forEach(r => { if (r[12]) mapaNomes[r[12]] = r[0]; });
+        }
+
+        // --- ETAPA 3: LOGIN HABLLA ---
+        const login = await axios.post('https://api.hablla.com/v1/authentication/login', { email: HABLLA_EMAIL, password: HABLLA_PASSWORD });
+        const hHeaders = { 'Authorization': `Bearer ${login.data.accessToken}` };
+
+        const hoje = new Date();
+        const seteDiasAtras = new Date();
+        seteDiasAtras.setDate(hoje.getDate() - 7);
+        seteDiasAtras.setHours(0, 0, 0, 0);
+
+        // --- ETAPA 4: LIMPEZA COM CRITÉRIO DE PARADA ---
+        secureLog("Analisando registros para limpeza (7 dias)...");
+        const resSheet = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:B`, { headers: gHeaders });
+        
+        if (resSheet.data?.values) {
+            const rows = resSheet.data.values;
+            let blocosParaDeletar = [], startIdx = -1, contadorConsecutivasFora = 0;
+
+            for (let i = rows.length - 1; i >= 1; i--) {
+                const dataRow = parseDataBR(rows[i][1]);
+                if (dataRow && dataRow >= seteDiasAtras) {
+                    if (startIdx === -1) startIdx = i;
+                    contadorConsecutivasFora = 0;
+                } else {
+                    contadorConsecutivasFora++;
+                    if (startIdx !== -1) {
+                        blocosParaDeletar.push({ start: i + 1, end: startIdx + 1 });
+                        startIdx = -1;
+                    }
+                    if (contadorConsecutivasFora >= 20) break;
+                }
+            }
+            if (startIdx !== -1) blocosParaDeletar.push({ start: 1, end: startIdx + 1 });
+
+            if (blocosParaDeletar.length > 0) {
+                const requests = blocosParaDeletar.map(b => ({
+                    deleteDimension: { range: { sheetId: idBaseHablla, dimension: "ROWS", startIndex: b.start, endIndex: b.end } }
+                }));
+                await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`, { requests }, { headers: gHeaders });
+            }
         }
 
         // --- ETAPA 5: BUSCA E INSERÇÃO ---
@@ -97,41 +117,54 @@ async function run() {
         let page = 1, paginasSemNovos = 0;
 
         while (page <= 500) {
-            const resApi = await axios.get(`https://api.hablla.com/v3/workspaces/${HABLLA_WORKSPACE_ID}/cards`, {
-                params: { board: HABLLA_BOARD_ID, limit: 50, page: page, updated_after: seteDiasAtras.toISOString() },
-                headers: hHeaders
-            });
-
-            const cards = resApi.data.results || [];
-            if (cards.length === 0) break;
-
-            const rowsToInsert = cards
-                .filter(c => new Date(c.created_at) >= seteDiasAtras)
-                .map(card => {
-                    let cf = ["", "", "", ""];
-                    const ids = ["67b39131ee792966f3fba492", "67b608470787782ce7acafba", "67dc6a0a17925c23d8365708", "679120ec177ff6d2c7597156"];
-                    (card.custom_fields || []).forEach(f => {
-                        const idx = ids.indexOf(f.custom_field);
-                        if (idx !== -1) cf[idx] = f.value;
-                    });
-                    const uid = card.user || "";
-                    return [
-                        formatarDataBR(card.updated_at), formatarDataBR(card.created_at), card.workspace, card.board, card.list,
-                        sanitize(cf[0]), sanitize(cf[1]), sanitize(cf[2]), sanitize(card.name), sanitize(card.description), card.source, card.status,
-                        uid, formatarDataBR(card.finished_at), card.id, mapaNomes[uid] || "", sanitize(cf[3]), (card.tags || []).map(t => t.name).join(", ")
-                    ];
+            try {
+                const resApi = await axios.get(`https://api.hablla.com/v3/workspaces/${HABLLA_WORKSPACE_ID}/cards`, {
+                    params: { board: HABLLA_BOARD_ID, limit: 50, page: page, updated_after: seteDiasAtras.toISOString() },
+                    headers: hHeaders
                 });
 
-            if (rowsToInsert.length > 0) {
-                await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:A:append?valueInputOption=USER_ENTERED`, 
-                    { values: rowsToInsert }, { headers: gHeaders });
-                await sleep(1500);
-                paginasSemNovos = 0;
-            } else {
-                paginasSemNovos++;
+                // --- IMPORTANTE: Rate Limit (Igual ao código que funciona) ---
+                await sleep(500); 
+
+                const cards = resApi.data.results || [];
+                if (cards.length === 0) break;
+
+                const rowsToInsert = cards
+                    .filter(c => new Date(c.created_at) >= seteDiasAtras)
+                    .map(card => {
+                        let cf = ["", "", "", ""];
+                        const ids = ["67b39131ee792966f3fba492", "67b608470787782ce7acafba", "67dc6a0a17925c23d8365708", "679120ec177ff6d2c7597156"];
+                        (card.custom_fields || []).forEach(f => {
+                            const idx = ids.indexOf(f.custom_field);
+                            if (idx !== -1) cf[idx] = f.value;
+                        });
+                        const uid = card.user || "";
+                        return [
+                            formatarDataBR(card.updated_at), formatarDataBR(card.created_at), card.workspace, card.board, card.list,
+                            sanitize(cf[0]), sanitize(cf[1]), sanitize(cf[2]), sanitize(card.name), sanitize(card.description), card.source, card.status,
+                            uid, formatarDataBR(card.finished_at), card.id, mapaNomes[uid] || "", sanitize(cf[3]), (card.tags || []).map(t => t.name).join(", ")
+                        ];
+                    });
+
+                if (rowsToInsert.length > 0) {
+                    await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:A:append?valueInputOption=USER_ENTERED`, 
+                        { values: rowsToInsert }, { headers: gHeaders });
+                    
+                    // Espera um pouco mais após escrever no Sheets para evitar 429 do Google
+                    await sleep(1200);
+                    paginasSemNovos = 0;
+                } else {
+                    paginasSemNovos++;
+                }
+                
+                if (paginasSemNovos >= 2) break;
+                page++;
+
+            } catch (errStep5) {
+                const status = errStep5.response ? errStep5.response.status : 'Rede/Socket';
+                secureLog(`Falha na página ${page} da Etapa 5: ${status}`, true);
+                throw errStep5; // Repassa para o catch principal
             }
-            if (paginasSemNovos >= 2) break;
-            page++;
         }
 
         // --- ETAPA 6: FAXINA DE DUPLICADOS (COLUNA O / ÍNDICE 14) ---
