@@ -57,20 +57,50 @@ async function run() {
 
     try {
         // --- ETAPA 1: METADADOS ---
-        secureLog("Obtendo IDs das abas...");
-        const meta = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`, { headers: gHeaders });
+        secureLog("Iniciando Etapa 1: Validando Planilha Principal...");
+        let meta;
+        try {
+            meta = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`, { headers: gHeaders });
+            secureLog("Sucesso na Etapa 1.");
+        } catch (err1) {
+            const code = err1.response?.status || "Rede";
+            const msg = err1.response?.data?.error?.message || err1.message;
+            secureLog(`ERRO CRÍTICO ETAPA 1 [${code}]: ${msg}`, true);
+            throw new Error(`Interrupção na Etapa 1: ${code}`);
+        }
+
         const sheetHablla = meta.data.sheets.find(s => s.properties.title === "Base Hablla Card");
         if (!sheetHablla) throw new Error("Aba 'Base Hablla Card' não encontrada!");
         const idBaseHablla = sheetHablla.properties.sheetId;
 
         // --- ETAPA 2: COLABORADORES ---
-        secureLog("Mapeando colaboradores...");
-        const resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { headers: gHeaders });
+        secureLog("Iniciando Etapa 2: Acessando DB Colaboradores...");
+        let resColab;
+        try {
+            // Tentando acessar a planilha de colaboradores
+            resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { 
+                headers: { 'Authorization': `Bearer ${GOOGLE_TOKEN}` } 
+            });
+            secureLog("Sucesso na Etapa 2.");
+        } catch (err2) {
+            const code = err2.response?.status || "Rede";
+            const msg = err2.response?.data?.error?.message || err2.message;
+            
+            // Aqui está o log que vai matar a charada:
+            secureLog(`ERRO DETALHADO ETAPA 2 [${code}]: ${msg}`, true);
+            
+            if (code === 401) {
+                secureLog("Pista: 401 aqui significa que o Token é aceito pelo Google, mas não tem permissão neste arquivo específico.");
+            } else if (code === 404) {
+                secureLog("Pista: 404 significa que o ID da planilha de colaboradores ou o nome da aba está incorreto.");
+            }
+            throw new Error(`Interrupção na Etapa 2: ${code}`);
+        }
+
         const mapaNomes = {};
         if (resColab.data?.values) {
             resColab.data.values.forEach(r => { if (r[12]) mapaNomes[r[12]] = r[0]; });
         }
-
         // --- ETAPA 3: LOGIN HABLLA ---
         const login = await axios.post('https://api.hablla.com/v1/authentication/login', { email: HABLLA_EMAIL, password: HABLLA_PASSWORD });
         const hHeaders = { 'Authorization': `Bearer ${login.data.accessToken}` };
