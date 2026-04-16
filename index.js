@@ -107,32 +107,30 @@ async function run() {
         
         let login;
         try {
-            // O .trim() remove espaços que o GitHub às vezes coloca ao colar segredos
-            login = await axios.post('https://api.hablla.com/v1/authentication/login', { 
-                email: HABLLA_EMAIL.trim(), 
-                password: HABLLA_PASSWORD.trim() 
-            });
+            login = await axios.post('https://api.hablla.com/v1/authentication/login', 
+                { 
+                    email: HABLLA_EMAIL.trim(), 
+                    password: HABLLA_PASSWORD.trim() 
+                },
+                { 
+                    timeout: 15000, // Espera até 15 segundos
+                    headers: { 'User-Agent': 'Mozilla/5.0 (GitHubActions/1.0)' } // Identifica a chamada
+                }
+            );
             secureLog("Sucesso no Login Hablla.");
         } catch (err3) {
-            const code = err3.response?.status || "Rede";
-            const apiData = err3.response?.data;
-            
-            secureLog(`[FALHA HABLLA] Status: ${code} | ErrorCode: ${apiRes?.errorCode}`, true);
-            secureLog(`[MENSAGEM API]: ${JSON.stringify(apiData)}`, true);
-
-            if (apiData?.errorCode === 469) {
-                secureLog("DICA: Como o dono é o mesmo, verifique se este e-mail tem permissão de 'API' ou 'Admin' explicitamente dentro DESTA empresa no painel da Hablla.");
+            // Se não tem response, é erro de rede puro (DNS, Timeout, Bloqueio de IP)
+            if (!err3.response) {
+                secureLog(`[ERRO DE REDE BRUTO]: ${err3.code} | ${err3.message}`, true);
+                secureLog("Pista: A API do Hablla não respondeu. Pode ser um bloqueio temporário do IP do GitHub ou instabilidade no servidor deles.");
+            } else {
+                const code = err3.response.status;
+                const apiData = err3.response.data;
+                secureLog(`[FALHA HABLLA] Status: ${code} | ErrorCode: ${apiData?.errorCode}`, true);
+                secureLog(`[MENSAGEM API]: ${JSON.stringify(apiData)}`, true);
             }
             throw new Error("Falha no Login.");
         }
-
-        // Headers com o token e o Workspace ID explícito (algumas APIs exigem o contexto no header)
-        const hHeaders = { 
-            'Authorization': `Bearer ${login.data.accessToken}`,
-            'X-Workspace-Id': HABLLA_WORKSPACE_ID.trim(), // Forçando o contexto da empresa
-            'Content-Type': 'application/json'
-        };
-
         // --- ETAPA 4: LIMPEZA COM CRITÉRIO DE PARADA ---
         secureLog("Analisando registros para limpeza (7 dias)...");
         const resSheet = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:B`, { headers: gHeaders });
