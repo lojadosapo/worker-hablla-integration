@@ -65,51 +65,31 @@ async function run() {
 
         // --- ETAPA 2: COLABORADORES ---
         secureLog("Mapeando colaboradores...");
-        const resColab = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`, { headers: gHeaders });
-        const mapaNomes = {};
-        if (resColab.data?.values) {
-            resColab.data.values.forEach(r => { if (r[12]) mapaNomes[r[12]] = r[0]; });
+        let resColab;
+        try {
+            // Isolando a requisição para evitar reaproveitamento de estado do Axios
+            resColab = await axios({
+                method: 'get',
+                url: `https://sheets.googleapis.com/v4/spreadsheets/${DB_COLABORADOR_ID}/values/Base_de_Colaboradores!A:M`,
+                headers: { 
+                    'Authorization': `Bearer ${GOOGLE_TOKEN}`,
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                timeout: 15000
+            });
+        } catch (errColab) {
+            const status = errColab.response ? errColab.response.status : 'Rede';
+            const detail = errColab.response?.data?.error?.message || "Sem detalhes";
+            secureLog(`Falha específica na Etapa 2 [${status}]: ${detail}`, true);
+            throw errColab; // Repassa para o catch principal
         }
 
-        // --- ETAPA 3: LOGIN HABLLA ---
-        const login = await axios.post('https://api.hablla.com/v1/authentication/login', { email: HABLLA_EMAIL, password: HABLLA_PASSWORD });
-        const hHeaders = { 'Authorization': `Bearer ${login.data.accessToken}` };
-
-        const hoje = new Date();
-        const seteDiasAtras = new Date();
-        seteDiasAtras.setDate(hoje.getDate() - 7);
-        seteDiasAtras.setHours(0, 0, 0, 0);
-
-        // --- ETAPA 4: LIMPEZA COM CRITÉRIO DE PARADA ---
-        secureLog("Analisando registros para limpeza (7 dias)...");
-        const resSheet = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/Base%20Hablla%20Card!A:B`, { headers: gHeaders });
-        
-        if (resSheet.data?.values) {
-            const rows = resSheet.data.values;
-            let blocosParaDeletar = [], startIdx = -1, contadorConsecutivasFora = 0;
-
-            for (let i = rows.length - 1; i >= 1; i--) {
-                const dataRow = parseDataBR(rows[i][1]);
-                if (dataRow && dataRow >= seteDiasAtras) {
-                    if (startIdx === -1) startIdx = i;
-                    contadorConsecutivasFora = 0;
-                } else {
-                    contadorConsecutivasFora++;
-                    if (startIdx !== -1) {
-                        blocosParaDeletar.push({ start: i + 1, end: startIdx + 1 });
-                        startIdx = -1;
-                    }
-                    if (contadorConsecutivasFora >= 20) break;
-                }
-            }
-            if (startIdx !== -1) blocosParaDeletar.push({ start: 1, end: startIdx + 1 });
-
-            if (blocosParaDeletar.length > 0) {
-                const requests = blocosParaDeletar.map(b => ({
-                    deleteDimension: { range: { sheetId: idBaseHablla, dimension: "ROWS", startIndex: b.start, endIndex: b.end } }
-                }));
-                await axios.post(`https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}:batchUpdate`, { requests }, { headers: gHeaders });
-            }
+        const mapaNomes = {};
+        if (resColab.data?.values) {
+            resColab.data.values.forEach(r => { 
+                if (r[12]) mapaNomes[r[12]] = r[0]; 
+            });
         }
 
         // --- ETAPA 5: BUSCA E INSERÇÃO ---
