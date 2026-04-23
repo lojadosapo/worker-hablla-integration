@@ -50,10 +50,21 @@ function formatarDataBR(dataISO) {
 async function run() {
     const { 
         GOOGLE_TOKEN, HABLLA_EMAIL, HABLLA_PASSWORD, 
-        HABLLA_WORKSPACE_ID, HABLLA_BOARD_ID, SPREADSHEET_ID, DB_COLABORADOR_ID 
+        HABLLA_WORKSPACE_ID, HABLLA_BOARD_ID, SPREADSHEET_ID, DB_COLABORADOR_ID, HABLLA_TOKEN
     } = process.env;
 
     const gHeaders = { 'Authorization': `Bearer ${GOOGLE_TOKEN}`, 'Content-Type': 'application/json' };
+
+    // Verificação básica de ambiente
+    if (!GOOGLE_TOKEN) {
+        console.error("ERRO CRÍTICO: GOOGLE_TOKEN ausente.");
+        return;
+    }
+
+    if (!HABLLA_WORKSPACE_ID) {
+        console.error("ERRO CRÍTICO: HABLLA_WORKSPACE_ID ausente.");
+        return;
+    }
 
     try {
         // --- ETAPA 1: METADADOS ---
@@ -71,9 +82,33 @@ async function run() {
             resColab.data.values.forEach(r => { if (r[12]) mapaNomes[r[12]] = r[0]; });
         }
 
-        // --- ETAPA 3: LOGIN HABLLA ---
-        const login = await axios.post('https://api.hablla.com/v1/authentication/login', { email: HABLLA_EMAIL, password: HABLLA_PASSWORD });
-        const hHeaders = { 'Authorization': `Bearer ${login.data.accessToken}` };
+        // --- ETAPA 3: AUTENTICAÇÃO HABLLA ---
+        let hToken = HABLLA_TOKEN;
+        let isWorkspaceToken = false;
+
+        if (!hToken) {
+            if (!HABLLA_EMAIL || !HABLLA_PASSWORD) {
+                console.error("ERRO: Para autenticação Hablla, defina HABLLA_TOKEN ou HABLLA_EMAIL + HABLLA_PASSWORD.");
+                return;
+            }
+            secureLog("Fazendo login no Hablla...");
+            const login = await axios.post('https://api.hablla.com/v1/authentication/login', { email: HABLLA_EMAIL, password: HABLLA_PASSWORD });
+            hToken = login.data.accessToken;
+            secureLog("Login realizado com sucesso.");
+        } else {
+            // Detectar tipo de token
+            if (hToken.startsWith('ey')) {
+                secureLog("Usando User Token do Hablla");
+            } else {
+                secureLog("Usando Workspace Token do Hablla (recomendado)");
+                isWorkspaceToken = true;
+            }
+        }
+
+        const hHeaders = {
+            'Authorization': isWorkspaceToken ? hToken : `Bearer ${hToken}`,
+            'accept': 'application/json'
+        };
 
         const hoje = new Date();
         const seteDiasAtras = new Date();

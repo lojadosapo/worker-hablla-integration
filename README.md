@@ -12,6 +12,36 @@ This worker operates in conjunction with the `worker-google-auth` repository.
 * **Token Handover**: The authentication worker generates a Google Access Token and dispatches it directly to this repository's workflow payload.
 * **Decoupling**: This architecture ensures that the integration worker does not need to manage long-lived Google Service Account keys, receiving only short-lived bearer tokens.
 
+## Configuration
+
+Configure the following secrets in your GitHub repository:
+
+- `GOOGLE_TOKEN`: Google Sheets API access token (provided by worker-google-auth)
+- `HABLLA_TOKEN`: **Workspace Token from Hablla** (recommended, doesn't expire)
+- `HABLLA_WORKSPACE_ID`: Hablla workspace ID
+- `HABLLA_BOARD_ID`: Hablla board ID
+- `SPREADSHEET_ID`: Google Sheets spreadsheet ID
+- `DB_COLABORADOR_ID`: Collaborator database spreadsheet ID
+
+### Obtaining the Workspace Token
+
+1. Execute a flow in Hablla Studio that uses an API component
+2. In the response, the token will be available in the `Authorization` header
+3. Use this value directly as `HABLLA_TOKEN`
+
+The code automatically detects whether it's a User Token or Workspace Token and configures the headers appropriately.
+
+## Local Testing
+
+For local development and testing:
+
+```bash
+npm install
+npm run local
+```
+
+Make sure to configure the `.env` file with your credentials before running locally.
+
 ## System Architecture
 
 ```mermaid

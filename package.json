@@ -4,9 +4,11 @@
   "description": "Processamento de Cards e Relatórios de Atendentes Hablla para Google Sheets",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "local": "node local.js"
   },
   "dependencies": {
-    "axios": "^1.6.0"
+    "axios": "^1.6.0",
+    "dotenv": "^17.4.2"
   }
 }
