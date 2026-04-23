@@ -25,8 +25,7 @@ jobs:
       - name: Run Integration
         env:
           GOOGLE_TOKEN:  ${{ secrets.GOOGLE_TOKEN }}
-          HABLLA_EMAIL: ${{ secrets.HABLLA_EMAIL }}
-          HABLLA_PASSWORD: ${{ secrets.HABLLA_PASSWORD }}
+          HABLLA_TOKEN: ${{ secrets.HABLLA_TOKEN }}
           HABLLA_WORKSPACE_ID: ${{ secrets.HABLLA_WORKSPACE_ID }}
           HABLLA_BOARD_ID: ${{ secrets.HABLLA_BOARD_ID }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
